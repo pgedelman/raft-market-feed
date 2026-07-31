@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -37,48 +38,59 @@ type LogEntry struct {
 }
 
 type StateChange struct {
-	NodeID PeerID
 	Role   Role
 	Term   int
-	Leader *PeerID
+	Leader *NodeID
 	At     time.Time
 }
 
-type PeerID int
+type NodeID int
 
 type Node struct {
 	mu sync.Mutex
 
-	id PeerID
+	id NodeID
 
 	currentTerm int
-	votedFor    *PeerID
-	votesChan   chan int
+	votedFor    *NodeID
 
-	logs     []LogEntry
-	logsChan chan LogEntry
+	logs []LogEntry
 
-	role          Role
-	leaderID      *PeerID
-	stateChangeCh chan StateChange
+	role     Role
+	leaderID *NodeID
 
 	electionTimer  *time.Timer
 	heartbeatEvery time.Duration
-	electionReset  chan struct{}
+
+	rpcChan chan any
 }
 
-func NewNode(id PeerID, peers map[int]chan string) *Node {
+func NewNode(id NodeID, peers map[int]chan string) *Node {
 	return &Node{
 		id:             id,
 		role:           Follower,
-		logsChan:       make(chan LogEntry),
-		stateChangeCh:  make(chan StateChange, 16),
 		heartbeatEvery: time.Duration(50+rand.IntN(51)) * time.Millisecond,
+		rpcChan:        make(chan any),
 	}
 }
 
 func (node *Node) Start() {
-	go node.runElectionTimer()
+	for msg := range node.rpcChan {
+		switch envelope := msg.(type) {
+		case RequestVoteEnvelope:
+			reply := RequestVoteReply{Term: node.CurrentTerm(), VoteGranted: false}
+
+			if envelope.Args.Term >= node.currentTerm {
+				reply.VoteGranted = true
+				fmt.Printf("[%s] Voted YES for %s\n", node.id, envelope.Args.CandidateID)
+			} else {
+				fmt.Printf("[%s] Voted NO for %s\n", node.id, envelope.Args.CandidateID)
+			}
+			envelope.ReplyChan <- reply
+		case RequestVoteReply:
+			
+		}
+	}
 }
 
 func (node *Node) runElectionTimer() {
@@ -109,4 +121,8 @@ func (node *Node) becomeCandidate() {
 	node.mu.Unlock()
 
 	//node.getVotes()
+}
+
+func (node *Node) CurrentTerm() int {
+	return node.currentTerm
 }
