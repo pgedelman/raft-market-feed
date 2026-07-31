@@ -76,3 +76,37 @@ func NewNode(id PeerID, peers map[int]chan string) *Node {
 		heartbeatEvery: time.Duration(50+rand.IntN(51)) * time.Millisecond,
 	}
 }
+
+func (node *Node) Start() {
+	go node.runElectionTimer()
+}
+
+func (node *Node) runElectionTimer() {
+	for {
+		select {
+		case <-node.electionTimer.C: // Happens when timer goes off
+			node.becomeCandidate()
+		case <-node.electionReset: // When timer needs to be reset (received a heartbeat)
+			if !node.electionTimer.Stop() {
+				select {
+				case <-node.electionTimer.C:
+				default:
+				}
+			}
+
+			node.electionTimer.Reset(node.heartbeatEvery)
+		}
+	}
+}
+
+func (node *Node) becomeCandidate() {
+	node.mu.Lock()
+
+	node.role = Candidate
+	node.currentTerm += 1
+	node.votedFor = &node.id
+
+	node.mu.Unlock()
+
+	//node.getVotes()
+}
