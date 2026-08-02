@@ -49,12 +49,17 @@ type NodeID int
 type Node struct {
 	mu sync.Mutex
 
-	id NodeID
+	id       NodeID
+	registry NetworkRegistry
 
-	currentTerm int
-	votedFor    *NodeID
+	currentTerm  int
+	votedFor     *NodeID
+	currentVotes int
 
-	logs []LogEntry
+	logs        []LogEntry
+	logIndex    int
+	commitIndex int
+	lastApplied int
 
 	role     Role
 	leaderID *NodeID
@@ -62,7 +67,7 @@ type Node struct {
 	electionTimer  *time.Timer
 	heartbeatEvery time.Duration
 
-	rpcChan chan any
+	rpcChan chan RPCEnvelope
 }
 
 func NewNode(id NodeID, peers map[int]chan string) *Node {
@@ -70,47 +75,92 @@ func NewNode(id NodeID, peers map[int]chan string) *Node {
 		id:             id,
 		role:           Follower,
 		heartbeatEvery: time.Duration(50+rand.IntN(51)) * time.Millisecond,
-		rpcChan:        make(chan any),
+		rpcChan:        make(chan RPCEnvelope),
 	}
 }
 
 func (node *Node) Start() {
-	for msg := range node.rpcChan {
-		switch envelope := msg.(type) {
-		case RequestVoteEnvelope:
-			reply := RequestVoteReply{Term: node.CurrentTerm(), VoteGranted: false}
+	go node.runElectionTimer()
 
-			if envelope.Args.Term >= node.currentTerm {
-				reply.VoteGranted = true
-				fmt.Printf("[%s] Voted YES for %s\n", node.id, envelope.Args.CandidateID)
-			} else {
-				fmt.Printf("[%s] Voted NO for %s\n", node.id, envelope.Args.CandidateID)
-			}
-			envelope.ReplyChan <- reply
-		case RequestVoteReply:
-			
-		}
-	}
-}
-
-func (node *Node) runElectionTimer() {
-	for {
-		select {
-		case <-node.electionTimer.C: // Happens when timer goes off
-			node.becomeCandidate()
-		case <-node.electionReset: // When timer needs to be reset (received a heartbeat)
-			if !node.electionTimer.Stop() {
+	for rpc := range node.rpcChan {
+		switch msg := rpc.Payload.(type) {
+		case AppendEntriesArgs:
+			if !node.electionTimer.Stop() { // Reset timer (received a heartbeat)
 				select {
 				case <-node.electionTimer.C:
 				default:
 				}
 			}
+			reply := AppendEntriesReply{Term: node.currentTerm, Success: false}
 
-			node.electionTimer.Reset(node.heartbeatEvery)
+			if rpc.Term >= node.currentTerm { // Peer has a newer leader
+				node.becomeFollower(msg.LeaderID, rpc.Term)
+				reply.Success = true
+			}
+
+			rpc.ReplyChan <- reply
+			node.electionTimer.Reset(node.heartbeatEvery) //  Reset heartbeat timer
+		case RequestVoteArgs:
+			reply := RequestVoteReply{Term: node.currentTerm, VoteGranted: false}
+
+			if rpc.Term >= node.currentTerm { // Confirms node is a follower
+				reply.VoteGranted = true
+				fmt.Printf("[%d] Voted YES for %d\n", node.id, msg.CandidateID)
+			} else {
+				fmt.Printf("[%d] Voted NO for %d\n", node.id, msg.CandidateID)
+			}
+			rpc.ReplyChan <- reply
 		}
 	}
 }
 
+func (node *Node) runElectionTimer() {
+	for range node.electionTimer.C {
+		node.becomeCandidate()
+		go node.requestVotes()
+	}
+}
+
+func (node *Node) runVoteHandler(voteChan chan any, term int, clusterSize int) {
+	votes := 1 // Votes for itself
+	for msg := range voteChan {
+		reply, ok := msg.(RequestVoteReply)
+		if !ok {
+			continue
+		}
+
+		node.mu.Lock()
+		stale := node.currentTerm != term || node.role == Candidate
+		stepDown := reply.Term > node.currentTerm
+		node.mu.Unlock()
+
+		if stepDown {
+			node.becomeFollower(node.id, reply.Term)
+			return
+		}
+		if stale {
+			return // A newer election has already started
+		}
+
+		if reply.VoteGranted {
+			votes++
+			if votes > clusterSize/2 {
+				// NOTE DEFINED         node.becomeLeader() // Majority votes becomes leader
+				return
+			}
+		}
+	}
+}
+
+func (node *Node) becomeFollower(newLeaderID NodeID, newTerm int) {
+	node.mu.Lock()
+
+	node.leaderID = &newLeaderID
+	node.role = Follower
+	node.currentTerm = newTerm
+
+	node.mu.Unlock()
+}
 func (node *Node) becomeCandidate() {
 	node.mu.Lock()
 
@@ -119,10 +169,21 @@ func (node *Node) becomeCandidate() {
 	node.votedFor = &node.id
 
 	node.mu.Unlock()
-
-	//node.getVotes()
 }
 
-func (node *Node) CurrentTerm() int {
-	return node.currentTerm
+func (node *Node) requestVotes() {
+	peers := node.registry.GetPeers(node.id) // Get other nodes in cluster
+	replyChan := make(chan any)
+
+	for _, peer := range peers {
+		go func() {
+			peer.rpcChan <- RPCEnvelope{
+				Term:      node.currentTerm,
+				Payload:   RequestVoteArgs{CandidateID: node.id},
+				ReplyChan: replyChan,
+			}
+		}()
+	}
+
+	go node.runVoteHandler(replyChan, node.currentTerm, len(peers)+1)
 }
