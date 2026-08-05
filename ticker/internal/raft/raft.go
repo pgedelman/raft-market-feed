@@ -38,13 +38,6 @@ type LogEntry struct {
 	Command []byte
 }
 
-type StateChange struct {
-	Role   Role
-	Term   int
-	Leader *NodeID
-	At     time.Time
-}
-
 type NodeID int
 
 type Node struct {
@@ -53,12 +46,10 @@ type Node struct {
 	id       NodeID
 	registry NetworkRegistry
 
-	currentTerm  int
-	votedFor     *NodeID
-	currentVotes int
+	currentTerm int
+	votedFor    *NodeID
 
 	logs        []LogEntry
-	logIndex    int
 	commitIndex int
 	lastApplied int
 
@@ -139,10 +130,21 @@ func (node *Node) HandleAppendEntry(rpc RPCEnvelope, msg AppendEntriesArgs) {
 }
 
 func (node *Node) HandleRequestVote(rpc RPCEnvelope, msg RequestVoteArgs) {
+	node.mu.Lock()
+	defer node.mu.Unlock()
+
+	if rpc.Term > node.currentTerm { // Newer term
+		node.currentTerm = rpc.Term
+		node.role = Follower
+		node.votedFor = nil
+	}
+
 	reply := RequestVoteReply{Term: node.currentTerm, VoteGranted: false}
 
-	if rpc.Term >= node.currentTerm { // Confirms node is a follower
+	if rpc.Term >= node.currentTerm && (node.votedFor == nil || *node.votedFor == msg.CandidateID) {
 		reply.VoteGranted = true
+		node.votedFor = &msg.CandidateID
+		node.electionTimer.Reset(node.heartbeatEvery)
 		fmt.Printf("[%d] Voted YES for %d\n", node.id, msg.CandidateID)
 	} else {
 		fmt.Printf("[%d] Voted NO for %d\n", node.id, msg.CandidateID)
@@ -154,6 +156,7 @@ func (node *Node) runElectionTimer() {
 	for range node.electionTimer.C {
 		node.becomeCandidate()
 		go node.requestVotes()
+		node.electionTimer.Reset(node.heartbeatEvery)
 	}
 }
 
@@ -345,19 +348,15 @@ func (node *Node) requestVotes() {
 	peers := node.registry.GetPeers(node.id) // Get other nodes in cluster
 	replyChan := make(chan any)
 
-	node.broadcastEnvelope(peers, RequestVoteArgs{CandidateID: node.id}, replyChan)
-
-	go node.runVoteHandler(replyChan, node.currentTerm, len(peers)+1)
-}
-
-func (node *Node) broadcastEnvelope(peers []*Node, args any, replyChan chan any) {
 	for _, peer := range peers {
 		go func() {
 			peer.rpcChan <- RPCEnvelope{
 				Term:      node.currentTerm,
-				Payload:   args,
+				Payload:   RequestVoteArgs{CandidateID: node.id},
 				ReplyChan: replyChan,
 			}
 		}()
 	}
+
+	go node.runVoteHandler(replyChan, node.currentTerm, len(peers)+1)
 }
