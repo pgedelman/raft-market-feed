@@ -16,7 +16,10 @@ type AppendEntriesReply struct {
 }
 
 type RequestVoteArgs struct {
-	CandidateID NodeID
+	Term         int
+	CandidateID  NodeID
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 type RequestVoteReply struct {
