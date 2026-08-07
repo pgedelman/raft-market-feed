@@ -44,7 +44,7 @@ type Node struct {
 	mu sync.Mutex
 
 	id       NodeID
-	registry NetworkRegistry
+	registry *NetworkRegistry
 
 	currentTerm int
 	votedFor    *NodeID
@@ -66,11 +66,11 @@ type Node struct {
 	rpcChan chan RPCEnvelope
 }
 
-func NewNode(id NodeID) *Node {
+func NewNode(id NodeID, registry *NetworkRegistry) *Node {
 	hE := time.Duration(150+rand.IntN(151)) * time.Millisecond
 	node := &Node{
 		id:             id,
-		registry:       NetworkRegistry{},
+		registry:       registry,
 		role:           Follower,
 		nextIndex:      make(map[NodeID]int),
 		matchIndex:     make(map[NodeID]int),
@@ -359,4 +359,18 @@ func (node *Node) requestVotes() {
 	}
 
 	go node.runVoteHandler(replyChan, node.currentTerm, len(peers)+1)
+}
+
+func (node *Node) Propose(cmd []byte) {
+	node.mu.Lock()
+	if node.role == Leader {
+		entry := LogEntry{
+			Term:    node.currentTerm,
+			Index:   len(node.logs),
+			Command: cmd,
+		}
+		node.logs = append(node.logs, entry)
+		node.applyCond.Signal()
+	}
+	node.mu.Unlock()
 }
