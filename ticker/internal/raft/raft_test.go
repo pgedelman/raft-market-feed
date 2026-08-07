@@ -50,22 +50,23 @@ func TestHandleAppendEntry_AppendAndTruncateOnConflict(t *testing.T) {
 	if !reply.Success {
 		t.Fatalf("expected append to succeed when PrevLogIndex/PrevLogTerm match")
 	}
-	if len(node.logs) != 2 || node.logs[1].Term != 2 {
-		t.Fatalf("expected new entry appended at index 1, got %+v", node.logs)
+	// PrevLogIndex=1 matched, so entries 0 and 1 are kept, and the new entry lands at index 2.
+	if len(node.logs) != 3 || node.logs[2].Term != 2 {
+		t.Fatalf("expected new entry appended at index 2, got %+v", node.logs)
 	}
 	if node.commitIndex != 1 {
 		t.Fatalf("expected commitIndex to advance to min(leaderCommit, ...) = 1, got %d", node.commitIndex)
 	}
 
 	reply = sendAppend(node, 1, AppendEntriesArgs{
-		PrevLogIndex: 1,
-		PrevLogTerm:  99, // does not match node.logs[1].Term
+		PrevLogIndex: 2,
+		PrevLogTerm:  99, // does not match node.logs[2].Term
 		Entries:      []LogEntry{{Term: 3}},
 	})
 	if reply.Success {
 		t.Fatalf("expected append to be rejected on PrevLogTerm mismatch")
 	}
-	if len(node.logs) != 2 || node.logs[1].Term != 2 {
+	if len(node.logs) != 3 || node.logs[2].Term != 2 {
 		t.Fatalf("expected logs unchanged after a rejected append, got %+v", node.logs)
 	}
 }

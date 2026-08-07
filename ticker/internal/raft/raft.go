@@ -72,6 +72,8 @@ func NewNode(id NodeID, registry *NetworkRegistry) *Node {
 		id:             id,
 		registry:       registry,
 		role:           Follower,
+		commitIndex:    -1,
+		lastApplied:    -1,
 		nextIndex:      make(map[NodeID]int),
 		matchIndex:     make(map[NodeID]int),
 		heartbeatEvery: hE,
@@ -113,8 +115,8 @@ func (node *Node) HandleAppendEntry(rpc RPCEnvelope, msg AppendEntriesArgs) {
 
 	reply := AppendEntriesReply{Term: node.currentTerm, Success: false}
 
-	if msg.PrevLogIndex < len(node.logs) && node.logs[msg.PrevLogIndex].Term == msg.PrevLogTerm {
-		node.logs = node.logs[:msg.PrevLogIndex]
+	if msg.PrevLogIndex < 0 || (msg.PrevLogIndex < len(node.logs) && node.logs[msg.PrevLogIndex].Term == msg.PrevLogTerm) {
+		node.logs = node.logs[:msg.PrevLogIndex+1]
 		node.logs = append(node.logs, msg.Entries...)
 
 		if msg.LeaderCommit > node.commitIndex {
@@ -154,6 +156,9 @@ func (node *Node) HandleRequestVote(rpc RPCEnvelope, msg RequestVoteArgs) {
 
 func (node *Node) runElectionTimer() {
 	for range node.electionTimer.C {
+		if node.role == Leader {
+			break
+		}
 		node.becomeCandidate()
 		go node.requestVotes()
 		node.electionTimer.Reset(node.heartbeatEvery)
@@ -288,7 +293,7 @@ func (node *Node) runVoteHandler(voteChan chan any, term int, clusterSize int) {
 		}
 
 		node.mu.Lock()
-		stale := node.currentTerm != term || node.role == Candidate
+		stale := node.currentTerm != term
 		stepDown := reply.Term > node.currentTerm
 		node.mu.Unlock()
 
@@ -330,6 +335,12 @@ func (node *Node) becomeCandidate() {
 	node.mu.Unlock()
 }
 func (node *Node) becomeLeader() {
+	if !node.electionTimer.Stop() { // Reset timer (received a heartbeat)
+		select {
+		case <-node.electionTimer.C:
+		default:
+		}
+	}
 	node.mu.Lock()
 
 	node.role = Leader
@@ -346,7 +357,7 @@ func (node *Node) becomeLeader() {
 
 func (node *Node) requestVotes() {
 	peers := node.registry.GetPeers(node.id) // Get other nodes in cluster
-	replyChan := make(chan any)
+	replyChan := make(chan any, len(peers))
 
 	for _, peer := range peers {
 		go func() {
@@ -359,6 +370,12 @@ func (node *Node) requestVotes() {
 	}
 
 	go node.runVoteHandler(replyChan, node.currentTerm, len(peers)+1)
+}
+
+func (node *Node) Snapshot() (id NodeID, role Role, term int, commitIndex int, logLen int) {
+	node.mu.Lock()
+	defer node.mu.Unlock()
+	return node.id, node.role, node.currentTerm, node.commitIndex, len(node.logs)
 }
 
 func (node *Node) Propose(cmd []byte) {
