@@ -15,7 +15,7 @@ func sendAppend(node *Node, term int, args AppendEntriesArgs) AppendEntriesReply
 }
 
 func TestHandleRequestVote_SingleVotePerTerm(t *testing.T) {
-	node := NewNode(1)
+	node := NewNode(1, NewNetworkRegistry())
 
 	if reply := sendVote(node, 1, 2); !reply.VoteGranted {
 		t.Fatalf("expected first vote in term 1 to be granted")
@@ -38,7 +38,7 @@ func TestHandleRequestVote_SingleVotePerTerm(t *testing.T) {
 }
 
 func TestHandleAppendEntry_AppendAndTruncateOnConflict(t *testing.T) {
-	node := NewNode(1)
+	node := NewNode(1, NewNetworkRegistry())
 	node.logs = []LogEntry{{Term: 1}, {Term: 1}}
 
 	reply := sendAppend(node, 1, AppendEntriesArgs{
@@ -71,7 +71,7 @@ func TestHandleAppendEntry_AppendAndTruncateOnConflict(t *testing.T) {
 }
 
 func TestAdvanceCommitIndex_MajorityAndTermCheck(t *testing.T) {
-	node := NewNode(1)
+	node := NewNode(1, NewNetworkRegistry())
 	node.logs = []LogEntry{{Term: 1}, {Term: 1}, {Term: 2}}
 	node.currentTerm = 2
 	node.matchIndex = map[NodeID]int{2: 2, 3: 1} // leader(idx 2) + peer2(idx 2) form a majority
@@ -91,7 +91,7 @@ func TestAdvanceCommitIndex_MajorityAndTermCheck(t *testing.T) {
 }
 
 func TestBecomeLeader_InitializesPeerState(t *testing.T) {
-	node := NewNode(1)
+	node := NewNode(1, NewNetworkRegistry())
 	node.becomeLeader()
 
 	if node.role != Leader {
